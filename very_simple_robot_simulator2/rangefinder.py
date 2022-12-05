@@ -1,6 +1,10 @@
 import numpy as np
 
-from utils import sawtooth
+try:  # for ROS2 run and launch compatibility  
+  from .utils import sawtooth
+
+except ImportError: # for python3 run compatibility
+  from utils import sawtooth
 
 
 def build_pixel_beam(global_map, robot_pose, max_len = 50.0):

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 
-import rospy
+import rclpy, numpy as np
 
-from geometry_msgs.msg import Twist, Pose, Quaternion, Vector3, Point
+from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+
+from geometry_msgs.msg import Twist, Pose, Quaternion, Point, TransformStamped
 from nav_msgs.msg import Odometry
-from tf import TransformBroadcaster
-from tf.transformations import euler_from_quaternion, quaternion_from_euler
-import numpy as np
 
-class KobukiSimulator(object):
+from tf2_ros import TransformBroadcaster #***
+from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
+
+class KobukiSimulator(Node):
   def __init__(self, initial_x = 1.0, initial_y = 1.0, initial_yaw = 0.0):
-    rospy.loginfo('Initializing Kobuki Simulator')
-    rospy.on_shutdown(self.shutdown)
+    super().__init__('kobuki_simulator')
     self.variable_init(initial_x, initial_y, initial_yaw)
     self.connection_init()
   
@@ -22,91 +25,93 @@ class KobukiSimulator(object):
     self.initial_x, self.initial_y, self.initial_yaw = initial_x, initial_y, initial_yaw
     self.simulate_ground_friction = True
     self.reset = False
+    
+    self.timer_cb_group = MutuallyExclusiveCallbackGroup()
+    self.sub1_cb_group = MutuallyExclusiveCallbackGroup()
+    self.sub2_cb_group = MutuallyExclusiveCallbackGroup()
 
-    self.real_pose_publish_rate = 5.0 # [Hz]
-    self.rate = rospy.Rate(self.real_pose_publish_rate)
+    self.timer_period = 0.2  # seconds = 5 hz
+    self.timer = self.create_timer(self.timer_period, self.main_loop, callback_group=self.timer_cb_group)
+    self.last_time = self.get_clock().now()
     
     # set real pose data
-    quat = quaternion_from_euler(0.0, 0.0, self.initial_yaw)
-    self.real_pose = Pose(Point(self.initial_x, self.initial_y, 0.0), Quaternion(*quat))
-    self.current_speed = Twist(Vector3(0.0, 0.0, 0.0), Vector3(0.0, 0.0, 0.0))
+    self.real_pose = self.create_pose(x=self.initial_x, y=self.initial_y, yaw=self.initial_yaw)
+    self.robot_speed = self.create_twist()
+
+    self.tf_broadcaster = TransformBroadcaster(self)
     
-    self.odom_broadcaster = TransformBroadcaster()
+    self.odom_tf = TransformStamped()
+    self.odom_tf.header.frame_id = 'odom'
+    self.odom_tf.child_frame_id = 'base_link'
 
     # set odom data
     self.odom = Odometry()
     self.odom.header.frame_id = 'odom'
     self.odom.child_frame_id = 'base_link'
-    
-    odom_quat = quaternion_from_euler(0.0, 0.0, 0.0)
-    self.odom.pose.pose = Pose(Point(0.0, 0.0, 0.0), Quaternion(*odom_quat))
+    self.odom.pose.pose = self.create_pose()
 
 
   def connection_init(self):
-    self.pub_odom = rospy.Publisher('odom', Odometry, queue_size = 10)
-    self.pub_real_pose = rospy.Publisher('real_pose', Pose, queue_size = 1)
+    self.pub_odom = self.create_publisher(Odometry, "odom", 10)
+    self.pub_real_pose = self.create_publisher(Pose, "real_pose", 10)
 
-    rospy.Subscriber('cmd_vel', Twist, self.move)
-    rospy.Subscriber('initial_pose', Pose, self.set_initial_pose)
+    self.sub_cmd_vel = self.create_subscription(Twist, 'cmd_vel', self.move, 10, callback_group=self.sub1_cb_group)
+    self.sub_init_pose = self.create_subscription(Pose, 'initial_pose', self.set_initial_pose, 10, callback_group=self.sub2_cb_group)
 
 
   def set_initial_pose(self, initial_pose):
-    if initial_pose.position.x == float('inf') and initial_pose.position.y == float('inf'):
-      quat = quaternion_from_euler(0.0, 0.0, self.initial_yaw)
-      initial_pose = Pose(Point(self.initial_x, self.initial_y, 0.0), Quaternion(*quat))
-      self.reset = True
-
     self.real_pose = initial_pose
     self.pub_real_pose.publish(self.real_pose)
 
 
   def main_loop(self):
-    # Depends on incoming speed
-    current_time = rospy.Time.now()
-    last_time = rospy.Time.now()
+
+    if self.reset:
+      point = Point()
+      point.x, point.y, point.z = 0.0, 0.0, 0.0
+      self.odom.pose.pose.position = point
+      self.reset = False
     
-    while not rospy.is_shutdown():
-      
-      if self.reset:
-        self.odom.pose.pose.position = Point(0.0, 0.0, 0.0)
-        self.reset = False
-      
-      vx, vy, vyaw = self.get_current_speed()
-      
-      current_time = rospy.Time.now()
-      dt = (current_time - last_time).to_sec()
+    vx, vy, vyaw = self.get_robot_speed()
+    
+    dt = self.timer_period
 
-      self.update_real_pose(vx, vy, vyaw, dt)
-      self.update_odom(vx, vy, vyaw, dt)
-
-      last_time = current_time
-      self.rate.sleep()
-  
+    self.update_real_pose(vx, vy, vyaw, dt)
+    self.update_odom(vx, vy, vyaw, dt)
+      
 
   def update_real_pose(self, vx, vy, vyaw, dt):
     x, y, yaw = self.update_pose(vx, vy, vyaw, dt, self.real_pose)
-
-    quat = quaternion_from_euler(0, 0, yaw)
-    self.real_pose = Pose(Point(x, y, 0.0), Quaternion(*quat))
-    
+    self.real_pose = self.create_pose(x = x, y = y, yaw = yaw)
     self.pub_real_pose.publish(self.real_pose)
 
   
   def update_odom(self, vx, vy, vyaw, dt):
     x, y, yaw = self.update_pose(vx, vy, vyaw, dt, self.odom.pose.pose)
     
-    # since all odometry is 6DOF we'll need a quaternion created from yaw
-    odom_quat = quaternion_from_euler(0.0, 0.0, yaw)
-
     # first, we'll publish the transform over tf
-    self.odom_broadcaster.sendTransform((x, y, 0.0), odom_quat, rospy.Time.now(), 'base_link', 'odom')
+    self.odom_tf.header.stamp = self.get_clock().now().to_msg()
+    self.send_br_tf(self.odom_tf, x, y, yaw)
 
     # set the position and velocity 
-    self.odom.pose.pose = Pose(Point(x, y, 0.0), Quaternion(*odom_quat))
-    self.odom.twist.twist = Twist(Vector3(vx, vy, 0.0), Vector3(0.0, 0.0, vyaw))
-
-    self.odom.header.stamp = rospy.Time.now()
+    self.odom.pose.pose = self.create_pose(x = x, y = y, yaw = yaw)
+    self.odom.twist.twist = self.create_twist(l_x=vx, l_y=vy, a_z=vyaw)
+    self.odom.header.stamp =  self.get_clock().now().to_msg()
+    
     self.pub_odom.publish(self.odom)
+  
+  def send_br_tf(self, t, x, y, yaw):
+    t.transform.translation.x = x
+    t.transform.translation.y = y
+    t.transform.translation.z = 0.0
+
+    q = quaternion_from_euler(0, 0, yaw)
+    t.transform.rotation.x = q[0]
+    t.transform.rotation.y = q[1]
+    t.transform.rotation.z = q[2]
+    t.transform.rotation.w = q[3]
+    
+    self.tf_broadcaster.sendTransform(t)
 
 
   def update_pose(self, vx, vy, vyaw, dt, pose):
@@ -128,37 +133,53 @@ class KobukiSimulator(object):
     return x, y, yaw
 
 
-  def move(self, twist):
+  def move(self, twist): #***
     if np.isnan(twist.linear.x) or np.isnan(twist.angular.z):
-      rospy.logwarn(f'Invalid speed command received: lin.x: {str(twist.linear.x)}, ang.z: {str(twist.angular.z)}')
+      self.get_logger().info(f'Invalid speed command received: lin.x: {str(twist.linear.x)}, ang.z: {str(twist.angular.z)}')
       return
+    
     # movement is restricted to x and yaw
-    twist.linear.y = 0.0
-    twist.linear.z = 0.0
-    twist.angular.x = 0.0
-    twist.angular.y = 0.0
-    self.current_speed = twist
+    self.robot_speed = self.create_twist(l_x=twist.linear.x, a_z=twist.angular.z )
 
 
-  def velocity_state(self, state):
-    rospy.loginfo(f'Current subscriptor: {state.data}')
-    if state.data == 'idle':
-      self.current_speed = Twist(Vector3(0.0, 0.0, 0.0), Vector3(0.0, 0.0, 0.0))
+  def create_pose(self, x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0):
+    point = Point()
+    point.x, point.y, point.z = x, y, z
+    
+    quat = Quaternion()
+    quat.x, quat.y, quat.z, quat.w = quaternion_from_euler(roll, pitch, yaw)
+
+    pose = Pose()
+    pose.position = point
+    pose.orientation = quat
+
+    return pose
+  
+
+  def create_twist(self, l_x=0.0, l_y=0.0, l_z=0.0, a_x=0.0, a_y=0.0, a_z=0.0):
+    twist = Twist()
+    twist.linear.x, twist.linear.y, twist.linear.z = l_x, l_y, l_z
+    twist.angular.x, twist.angular.y, twist.angular.z = a_x, a_y, a_z
+    return twist
 
 
-  def get_current_speed(self):
-    return self.current_speed.linear.x, self.current_speed.linear.y, self.current_speed.angular.z
+  def get_robot_speed(self):
+    return self.robot_speed.linear.x, self.robot_speed.linear.y, self.robot_speed.angular.z
 
 
-  def shutdown(self):
-    rospy.loginfo('Stopping Kobuki Simulator')
-    # a default Twist has linear.x of 0 and angular.z of 0.  So it'll stop TurtleBot
-    self.current_speed = Twist(Vector3(0.0, 0.0, 0.0), Vector3(0.0, 0.0, 0.0))
-    # sleep just makes sure TurtleBot receives the stop command prior to shutting down the script
-    rospy.sleep(1)
+def main(args=None):
+    rclpy.init(args=args)
+    
+    kobuki_simulator = KobukiSimulator()
+
+    executor = MultiThreadedExecutor()
+    executor.add_node(kobuki_simulator)
+    
+    kobuki_simulator.get_logger().info('Initializing Kobuki Simulator')
+    executor.spin()
+   
+    kobuki_simulator.destroy_node()
 
 
 if __name__ == '__main__':
-  rospy.init_node('kobuki_simulator')
-  kobuki_sim = KobukiSimulator()
-  kobuki_sim.main_loop()
+  main()

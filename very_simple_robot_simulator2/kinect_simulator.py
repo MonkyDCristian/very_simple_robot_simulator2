@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
   
-import rospy
-import numpy as np
-import cv2
+import rclpy, cv2, numpy as np
+
+from rclpy.node import Node
 
 from geometry_msgs.msg import Pose
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import Image
-from tf.transformations import euler_from_quaternion
+from tf_transformations import euler_from_quaternion
 from cv_bridge import CvBridge
 
-from utils import CoordinateConverter
-from rangefinder import build_pixel_rangefinder
+try:  # for ROS2 run and launch compatibility  
+  from .utils import CoordinateConverter
+  from .rangefinder import build_pixel_rangefinder
+
+except ImportError: # for python3 run compatibility
+  from utils import CoordinateConverter
+  from rangefinder import build_pixel_rangefinder
 
 
-class KinectSimulator(object):
+class KinectSimulator(Node):
 
   def __init__(self):
+    super().__init__('kinect_simulator')
     self.variable_init()
     self.connection_init()
   
@@ -46,10 +52,10 @@ class KinectSimulator(object):
   
 
   def connection_init(self):
-    self.pub_depth = rospy.Publisher('camera/depth/image_raw', Image, queue_size = 1)
+    self.pub_depth = self.create_publisher(Image, 'camera/depth/image_raw', 10)
 
-    rospy.Subscriber('/real_pose', Pose, self.new_pose, queue_size = 1)
-    rospy.Subscriber('map', OccupancyGrid, self.set_map)
+    self.sub_map = self.create_subscription(OccupancyGrid, 'map', self.set_map, 10)
+    self.sub_real_pose = self.create_subscription(Pose, '/real_pose', self.new_pose, 10)
     
 
   def new_pose(self, pose):
@@ -77,11 +83,13 @@ class KinectSimulator(object):
 
     distance_sensor = self.map_resolution * np.array(distance_sensor) # [m]
     distance_sensor = distance_sensor[::-1] # reverse: from left to right
+   
     for c, d in enumerate(distance_sensor):
       d = d*np.cos(self.h_beam_angles[c]) # project beam into the robot plane
 
       ceiling_angle = np.arctan2(self.wall_height - self.kinect_height, d)
       ceiling_limit_index = -1
+     
       if ceiling_angle < self.vfov/2.0:
         ceiling_indices = np.where(self.v_beam_angles > ceiling_angle)[0]
         depth_image[ceiling_indices,c] = self.max_depth
@@ -89,6 +97,7 @@ class KinectSimulator(object):
 
       ground_angle = np.arctan2(self.kinect_height, d)
       ground_limit_index = self.n_v_scans
+      
       if ground_angle < self.vfov/2.0:
         ground_indices = np.where(self.v_beam_angles < -ground_angle)[0]
         for i in ground_indices:
@@ -98,8 +107,10 @@ class KinectSimulator(object):
 
       if ceiling_limit_index < 0:
         depth_image[0:ground_limit_index,c] = d if d >= self.min_valid_distance else float('nan')
+      
       else:
         depth_image[ceiling_limit_index+1:ground_limit_index,c] = d if d >= self.min_valid_distance else float('nan')
+    
     depth_image = cv2.resize(depth_image, (self.depth_img_width, self.depth_img_height))
 
     msg = self.cv_bridge.cv2_to_imgmsg(depth_image) #, encoding = '32FC1')
@@ -114,8 +125,11 @@ class KinectSimulator(object):
     self.view_depth_pix = self.view_depth / self.map_resolution # [pix]
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    kinect_simulator = KinectSimulator()
+    rclpy.spin(kinect_simulator)
+
 if __name__ == '__main__':
-  rospy.init_node('kinect_simulator')
-  kinect_simulator = KinectSimulator()
-  rospy.spin()
+  main()
 

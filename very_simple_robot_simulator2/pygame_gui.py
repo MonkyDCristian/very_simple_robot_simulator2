@@ -3,13 +3,22 @@ import pygame, sys, cv2, numpy as np
 
 from PIL import Image
 from pygame.locals import MOUSEBUTTONUP, MOUSEBUTTONDOWN, MOUSEMOTION, KEYDOWN, QUIT
-from utils import CoordinateConverter
+
+try: # for ROS2 run and launch compatibility  
+  from .utils import CoordinateConverter
+
+except ImportError: # for python3 run compatibility
+  from utils import CoordinateConverter
+  
 
 class Robot(object):
   def __init__(self, x = 30, y = 200, yaw = 0, radius = 30):
     self.radius = radius
     self.x, self.y = x, y
     self.yaw = yaw
+
+    self.pose_changing = False
+    self.pose_changed = False
    
     self.cir_color = (0, 0, 255) # blue
     self.lin_color = (255, 255, 255) # white
@@ -31,16 +40,16 @@ class Robot(object):
 
 class Map(object):
   def __init__(self, width = 500, height = 290, wall_thick = 3, resolution = 0.01):
-    self.np_map = self.make_map(height, width, wall_thick)
-    
-    self.height, self.width =  self.np_map.shape[:2]
     self.wall_thick = wall_thick
+    self.np_map = self.make_map(height, width, wall_thick)
+    self.height, self.width =  self.np_map.shape[:2]
     
-    self.pil_map =  Image.fromarray(cv2.cvtColor(self.np_map, cv2.COLOR_BGR2RGB))
-    self.pg_map = pygame.image.fromstring(self.pil_map.tobytes(), self.pil_map.size, self.pil_map.mode)
+    self.load_pg_map()
     
-    self.map_resolution = resolution
-    self.map_converter = CoordinateConverter(0.0, self.height * self.map_resolution, self.map_resolution)
+    self.resolution = resolution
+    self.converter = CoordinateConverter(0.0, self.height * self.resolution, self.resolution)
+
+    self.changed = False
   
 
   def make_map(self, height, width, wall_thick):
@@ -51,6 +60,8 @@ class Map(object):
    
     np_map = np.concatenate((horizontal_wall, np_map, horizontal_wall), axis = 0)
     np_map = np.concatenate((vertical_wall, np_map, vertical_wall), axis = 1)
+
+    np_map = cv2.cvtColor(np_map, cv2.COLOR_GRAY2RGB)
     
     return np_map
   
@@ -59,7 +70,14 @@ class Map(object):
     new_map = pygame.surfarray.array3d(display_surf)
     new_map = new_map.transpose([1, 0, 2])
     self.np_map = cv2.cvtColor(new_map, cv2.COLOR_RGB2BGR)
+    self.height, self.width =  self.np_map.shape[:2]
+    self.changed = True
   
+
+  def load_pg_map(self):
+    pil_map =  Image.fromarray(cv2.cvtColor(self.np_map, cv2.COLOR_BGR2RGB))
+    self.pg_map = pygame.image.fromstring(pil_map.tobytes(), pil_map.size, pil_map.mode)
+
   
   def draw(self, surface):
     surface.blit(self.pg_map, (0, 0))
@@ -84,7 +102,7 @@ class PyGameGUI(object):
 
     self.robot_diameter = 0.355 # [m]
     self.robot_radio = self.robot_diameter / 2.0 # [m]
-    self.robot_radio_pix = int(self.robot_radio/self.gui_resolution)
+    self.robot_radio_pix = int(self.robot_radio/self.map.resolution)
     
     self.robot = Robot(radius = self.robot_radio_pix)
 
@@ -156,6 +174,7 @@ class PyGameGUI(object):
       
       if event.type == MOUSEBUTTONDOWN and event.button == 1:
         self.mouse_start_pos = event.pos
+        self.robot.pose_changing = True
         self.text_active = True
         
         
@@ -190,11 +209,13 @@ class PyGameGUI(object):
         self.set_robot_pose_text()
 
     else:
+      self.robot.pose_changing = False
+      self.robot.pose_changed = True
       self.back_to_idle()
   
 
   def set_robot_pose_text(self):
-    x_m, y_m = self.gui_converter.pixel2metric(self.robot.x, self.robot.y)
+    x_m, y_m = self.map.converter.pixel2metric(self.robot.x, self.robot.y)
     self.create_text('(%.3f, %.3f) [m]' % (x_m, y_m))
 
 
@@ -211,6 +232,8 @@ class PyGameGUI(object):
         self.create_text('%.2f [rad]' % self.robot.yaw)
 
     else:
+      self.robot.pose_changing = False
+      self.robot.pose_changed = True
       self.back_to_idle()
   
   
@@ -236,8 +259,8 @@ class PyGameGUI(object):
      
       if len(move_events) > 0:
         mouse_end_pos = move_events[-1].pos
-        delta_x = abs(mouse_end_pos[0]-self.mouse_start_pos[0])*self.gui_converter.resolution
-        delta_y = abs(mouse_end_pos[1]-self.mouse_start_pos[1])*self.gui_converter.resolution
+        delta_x = abs(mouse_end_pos[0]-self.mouse_start_pos[0])*self.map.converter.resolution
+        delta_y = abs(mouse_end_pos[1]-self.mouse_start_pos[1])*self.map.converter.resolution
         self.create_text('%.3f [m]' % np.hypot(delta_x, delta_y))
         
         self.wall_list[-1][1] = mouse_end_pos

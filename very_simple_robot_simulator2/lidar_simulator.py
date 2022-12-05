@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 
-import rospy
-import numpy as np
+import rclpy, numpy as np
+
+from rclpy.node import Node
 
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid
-from tf.transformations import euler_from_quaternion
+from tf_transformations import euler_from_quaternion
 
-from rangefinder import build_pixel_rangefinder
-from utils import CoordinateConverter
+try:  # for ROS2 run and launch compatibility  
+  from .utils import CoordinateConverter
+  from .rangefinder import build_pixel_rangefinder
+
+except ImportError: # for python3 run compatibility
+  from utils import CoordinateConverter
+  from rangefinder import build_pixel_rangefinder
 
 
-class LidarSimulator(object):
+class LidarSimulator(Node):
 
   def __init__(self):
+    super().__init__('lidar_simulator')
     self.variable_init()
     self.connection_init()
   
@@ -35,7 +42,6 @@ class LidarSimulator(object):
     self.lidar_n_h_scans = 181
 
     self.laserScan = LaserScan()
-    self.laserScan.header.seq = 0
     self.laserScan.header.frame_id = "base_link"
     self.laserScan.angle_min = -self.lidar_fov/2.0
     self.laserScan.angle_max = self.lidar_fov/2.0
@@ -48,9 +54,10 @@ class LidarSimulator(object):
   
 
   def connection_init(self):
-    rospy.Subscriber('map', OccupancyGrid, self.set_map)
-    rospy.Subscriber('/real_pose', Pose, self.new_pose, queue_size = 1)
-    self.scan_pub = rospy.Publisher('/scan', LaserScan, queue_size = 10)
+    self.pub_scan = self.create_publisher(LaserScan, '/scan', 10)
+
+    self.sub_map = self.create_subscription(OccupancyGrid, 'map', self.set_map, 10)
+    self.sub_real_pose = self.create_subscription(Pose, '/real_pose', self.new_pose, 10)
 
 
   def new_pose(self, pose):
@@ -90,10 +97,9 @@ class LidarSimulator(object):
 
 
   def send_laser_scan(self, scans):
-    self.laserScan.header.seq += 1
-    self.laserScan.header.stamp = rospy.Time.now()   
-    self.laserScan.ranges = scans
-    self.scan_pub.publish(self.laserScan)
+    self.laserScan.header.stamp =  self.get_clock().now().to_msg() 
+    self.laserScan.ranges = list(scans)
+    self.pub_scan.publish(self.laserScan)
 
 
   def set_map(self, occupancy_grid):
@@ -104,8 +110,11 @@ class LidarSimulator(object):
     self.view_depth_pix = self.view_depth / self.map_resolution # [pix]
 
 
-if __name__ == '__main__':
-  rospy.init_node('lidar_simulator')
-  lidar_sim = LidarSimulator()
-  rospy.spin()
+def main(args=None):
+    rclpy.init(args=args)
+    lidar_simulator = LidarSimulator()
+    rclpy.spin(lidar_simulator)
 
+
+if __name__ == '__main__':
+  main()
