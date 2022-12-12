@@ -4,6 +4,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
+from std_msgs.msg import String
 from geometry_msgs.msg import Pose, Quaternion, Point
 from std_msgs.msg import Header
 from nav_msgs.msg import MapMetaData, OccupancyGrid
@@ -29,7 +30,9 @@ class WorldSimulator(Node):
       self.pg_gui = PyGameGUI()
       
       self.timer_cb_group = MutuallyExclusiveCallbackGroup()
-      self.sub_cb_group = MutuallyExclusiveCallbackGroup()
+      self.sub1_cb_group = MutuallyExclusiveCallbackGroup()
+      self.sub2_cb_group = MutuallyExclusiveCallbackGroup()
+
 
       timer_period = 0.05  # seconds = 20 hz
       self.timer = self.create_timer(timer_period, self.update_gui, callback_group=self.timer_cb_group)
@@ -40,7 +43,8 @@ class WorldSimulator(Node):
       self.pub_map = self.create_publisher(OccupancyGrid, 'map', 10)
       self.pub_initial_pose = self.create_publisher(Pose, 'initial_pose', 10)
 
-      self.subscription = self.create_subscription(Pose, 'real_pose', self.update_robot_pose, 10, callback_group=self.sub_cb_group)
+      self.subscription = self.create_subscription(Pose, 'real_pose', self.update_robot_pose, 10, callback_group=self.sub1_cb_group)
+      self.subscription = self.create_subscription(String, 'load_map', self.load_new_map, 10, callback_group=self.sub2_cb_group)
 
 
     def update_gui(self):
@@ -102,6 +106,13 @@ class WorldSimulator(Node):
       occupancy_grid.data = og_data.tolist()
       
       self.pub_map.publish(occupancy_grid)
+    
+
+    def load_new_map(self, msg):
+      yaml_file = msg.data
+      self.pg_gui.map.load_new_map(yaml_file)
+      self.pg_gui.setup_screen()
+      self.update_map()
 
 
     def create_pose(self, x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0):

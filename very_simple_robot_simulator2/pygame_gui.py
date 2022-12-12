@@ -1,8 +1,9 @@
 
-import pygame, sys, cv2, numpy as np
+import pygame, sys, cv2, yaml, numpy as np
 
+from os import path
 from PIL import Image
-from pygame.locals import MOUSEBUTTONUP, MOUSEBUTTONDOWN, MOUSEMOTION, KEYDOWN, QUIT
+from pygame.locals import MOUSEBUTTONUP, MOUSEBUTTONDOWN, MOUSEMOTION, KEYDOWN, QUIT, RESIZABLE
 
 try: # for ROS2 run and launch compatibility  
   from .utils import CoordinateConverter
@@ -41,9 +42,7 @@ class Robot(object):
 class Map(object):
   def __init__(self, width = 500, height = 290, wall_thick = 3, resolution = 0.01):
     self.wall_thick = wall_thick
-    self.np_map = self.make_map(height, width, wall_thick)
-    self.height, self.width =  self.np_map.shape[:2]
-    
+    self.np_map = self.make_map(height, width, wall_thick) 
     self.load_pg_map()
     
     self.resolution = resolution
@@ -66,6 +65,28 @@ class Map(object):
     return np_map
   
 
+  def load_new_map(self, yaml_file):
+      if path.isfile(yaml_file):
+        
+        with open(yaml_file) as fd:
+         metadata = yaml.safe_load(fd)
+        
+        if not path.isabs(metadata['image']):
+          map_path = path.dirname(yaml_file)
+          map_filename = path.basename(metadata['image'])
+          map_file = path.join(map_path, map_filename)
+        
+        else:
+          map_file = metadata['image']
+        
+        self.resolution = metadata['resolution'] # [m/pix]
+        self.converter = CoordinateConverter(metadata['origin'][0], metadata['origin'][1], self.resolution)
+
+        self.np_map = cv2.imread(map_file, cv2.IMREAD_GRAYSCALE)
+        self.load_pg_map()
+  
+  
+
   def update_map(self, display_surf):
     new_map = pygame.surfarray.array3d(display_surf)
     new_map = new_map.transpose([1, 0, 2])
@@ -75,6 +96,7 @@ class Map(object):
   
 
   def load_pg_map(self):
+    self.height, self.width =  self.np_map.shape[:2]
     pil_map =  Image.fromarray(cv2.cvtColor(self.np_map, cv2.COLOR_BGR2RGB))
     self.pg_map = pygame.image.fromstring(pil_map.tobytes(), pil_map.size, pil_map.mode)
 
@@ -123,7 +145,7 @@ class PyGameGUI(object):
 
 
   def setup_screen(self):
-    self.display_surf = pygame.display.set_mode((self.map.width, self.map.height))
+    self.display_surf = pygame.display.set_mode((self.map.width, self.map.height), RESIZABLE)
     self.map.draw(self.display_surf)
 
   
