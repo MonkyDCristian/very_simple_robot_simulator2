@@ -14,6 +14,10 @@ mkdir -p ~/<your_ws>/src && cd ~/<your_ws>/src
 git clone https://github.com/MonkyDCristian/very_simple_robot_simulator2.git
 cd ~/<your_ws> && colcon build
 cp -r ~/<your_ws>/src/very_simple_robot_simulator2/launch ~/<your_ws>/install/very_simple_robot_simulator2/share/very_simple_robot_simulator2
+```
+
+## Include package in your ROS2 environment
+```
 echo "source ~/<your_ws>/install/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -26,6 +30,13 @@ source ~/.bashrc
 
 ## Architecture
 ![Alt text](/imgs/rosgraph.png)
+
+
+## Launch
+```
+ros2 launch very_simple_robot_simulator2 run_all.launch.py
+```
+
 
 
 
